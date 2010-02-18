@@ -33,6 +33,7 @@ type Game struct {
 	current		Status
 	random		*rand.Rand
 	img			draw.Image
+	context		draw.Context
 	board		[25][12]int
 }
 
@@ -60,97 +61,103 @@ var block [8]Block = [8]Block{
 */
 
 func main(){
+	var error os.Error
 	runtime.GOMAXPROCS(2)
-	context, error := x11.NewWindow()
+	game := initGame()
+	game.context, error = x11.NewWindow()
 	if error != nil {
 		fmt.Fprintf(os.Stderr, "x11失敗 %s\n", error)
 		os.Exit(1)
 	}
 	// 初期設定
 	sync := make(chan bool)
-	game := initGame()
-	game.img = context.Screen()
+	game.img = game.context.Screen()
 
 	game.createBlock()
 	game.putBlock(game.current, false)
 
 	go func(){
 		// チャネル入力があるまでストップ
-		<-context.QuitChan()
-		sync <- true
+		<-game.context.QuitChan()
+		os.Exit(0)
 	}()
 
-	go func(){
-		for {
-			mouse := <-context.MouseChan()
-			if mouse.Buttons != 0 {
-				// バックアップ
-				n := game.current
-				if (mouse.Buttons & 0x01) == 0x01 {
-					// 左クリック検知
-					n.x--
-				} else if (mouse.Buttons & 0x02) == 0x02 {
-					// 中クリック検知
-					n.rotate++
-				} else if (mouse.Buttons & 0x04) == 0x04 {
-					// 右クリック検知
-					n.x++
-				}
-				if n.x != game.current.x || n.y != game.current.y || n.rotate != game.current.rotate {
-					game.deleteBlock(game.current)
-					if game.putBlock(n, false) {
-						game.current = n
-					} else {
-						game.putBlock(game.current, false)
-					}
-					game.printBoard()
-					context.FlushImage()
-				}
-			}
-		}
-		sync <- true
-	}()
-	
-	go func(){
-		for {
-			key := <-context.KeyboardChan()
-			if key > 0 {
-				n := game.current
-				game.deleteBlock(game.current)
-				n.y++
-				if game.putBlock(n, false) {
-					game.current = n
-					game.printBoard()
-					context.FlushImage()
-				}
-			}
-		}
-	}()
+	for {
+		go game.mouseEvent()
+		go game.keyboardEvent()
+		go game.timerEvent()
+		<-sync
+	}
+}
 
-	go func(){
-		// 500ms
-		timer := time.Tick(500 * 1000 * 1000)
-		for {
-			<-timer
-			n := game.current
-			game.deleteBlock(n)
+func (this *Game) mouseEvent(){
+	for {
+		mouse := <-this.context.MouseChan()
+		if mouse.Buttons != 0 {
+			// バックアップ
+			n := this.current
+			if (mouse.Buttons & 0x01) == 0x01 {
+				// 左クリック検知
+				n.x--
+			} else if (mouse.Buttons & 0x02) == 0x02 {
+				// 中クリック検知
+				n.rotate++
+			} else if (mouse.Buttons & 0x04) == 0x04 {
+				// 右クリック検知
+				n.x++
+			}
+			if n.x != this.current.x || n.y != this.current.y || n.rotate != this.current.rotate {
+				this.deleteBlock(this.current)
+				if this.putBlock(n, false) {
+					this.current = n
+				} else {
+					this.putBlock(this.current, false)
+				}
+				this.printBoard()
+				this.context.FlushImage()
+			}
+		}
+	}
+}
+
+func (this *Game) keyboardEvent(){
+	for {
+		key := <-this.context.KeyboardChan()
+		if key > 0 {
+			n := this.current
+			this.deleteBlock(this.current)
 			n.y++
-			if game.putBlock(n, false) {
-				game.current = n
-			} else {
-				game.putBlock(game.current, false)
-				game.createBlock()
-				if !game.putBlock(game.current, false) {
-					game.gameOver()
-				}
+			if this.putBlock(n, false) {
+				this.current = n
+				this.printBoard()
+				this.context.FlushImage()
 			}
-			game.printBoard()
-			context.FlushImage()
 		}
-		close(timer)
-		sync <- true
-	}()
-	<-sync
+	}
+}
+
+func (this *Game) timerEvent(){
+	// 500ms
+	timer := time.Tick(500 * 1000 * 1000)
+	for {
+		<-timer
+		n := this.current
+		this.deleteBlock(n)
+		n.y++
+		if this.putBlock(n, false) {
+			this.current = n
+		} else {
+			this.putBlock(this.current, false)
+			this.createBlock()
+			if !this.putBlock(this.current, false) {
+				this.gameOver()
+				break
+			}
+		}
+		this.printBoard()
+		this.context.FlushImage()
+	}
+	close(timer)
 }
 
 func (this *Game) gameOver(){
