@@ -12,31 +12,31 @@ import (
 )
 
 type Point struct {
-	y		int
-	x		int
+	Y		int
+	X		int
 }
 
 type Block struct {
-	rotate		int
-	p			[3]Point
-	color		image.RGBAColor
+	Rotate		int
+	P			[3]Point
+	Color		image.RGBAColor
 }
 
 type Status struct {
-	y		int
-	x		int
-	ty		int
-	rotate	int
+	Y		int
+	X		int
+	Ty		int
+	Rotate	int
 }
 
 type Game struct {
-	current		Status
-	random		*rand.Rand
-	img			draw.Image
-	context		draw.Context
-	reset		chan bool
-	start		bool
-	board		[25][12]int
+	Current		Status
+	Random		*rand.Rand
+	Img			draw.Image
+	Context		draw.Window
+	Reset		chan bool
+	Start		bool
+	Board		[25][12]int
 }
 
 const (
@@ -66,28 +66,38 @@ var block [8]Block = [8]Block{
 func main(){
 	var error os.Error
 	game := new(Game)
-	game.reset = make(chan bool)
-	game.context, error = x11.NewWindow()
+	game.Reset = make(chan bool)
+	game.Context, error = x11.NewWindow()
 	if error != nil {
 		fmt.Fprintf(os.Stderr, "x11失敗 %s\n", error)
 		os.Exit(1)
 	}
-	game.img = game.context.Screen()
-	game.start = false
+	game.Img = game.Context.Screen()
+	game.Start = false
 	
 	// スレッド実行
-	runtime.GOMAXPROCS(2)
+	runtime.GOMAXPROCS(4)
 
 	go func(){
-		// チャネル入力があるまでストップ
-		<-game.context.QuitChan()
-		os.Exit(0)
+		ch := game.Context.EventChan()
+		for {
+			// チャネル入力があるまでストップ
+			i := <- ch
+			switch i.(type) {
+			case draw.MouseEvent:
+				// マウスイベント待ち受け
+				data, _ := i.(draw.MouseEvent)
+				game.mouseEvent(data)
+			case draw.KeyEvent:
+				// キーボードイベント待ち受け
+				data, _ := i.(draw.KeyEvent)
+				game.keyboardEvent(data)
+			case draw.ConfigEvent:
+			case draw.ErrEvent:
+				os.Exit(0)
+			}
+		}
 	}()
-
-	// マウスイベント待ち受け
-	go game.mouseEvent()
-	// キーボードイベント待ち受け
-	go game.keyboardEvent()
 	// タイマイベント待ち受け
 	go game.timerEvent()
 
@@ -95,45 +105,49 @@ func main(){
 		// 初期設定
 		initGame(game)
 		game.createBlock()
-		game.putBlock(game.current, false)
+		game.putBlock(game.Current, false)
 		game.printBoard()
-		game.start = true
-		<-game.reset
+		game.Start = true
+		<-game.Reset
 	}
-	close(game.reset)
+	close(game.Reset)
 }
 
-func (this *Game) mouseEvent(){
-	for {
-		mouse := <-this.context.MouseChan()
-		if mouse.Buttons != 0 && this.start {
-			// バックアップ
-			n := this.current
-			if (mouse.Buttons & 0x01) == 0x01 {
-				// 左クリック検知
-				n.x--
-			} else if (mouse.Buttons & 0x02) == 0x02 {
-				// 中クリック検知
-				n.rotate++
-			} else if (mouse.Buttons & 0x04) == 0x04 {
-				// 右クリック検知
-				n.x++
-			}
-			if n.x != this.current.x || n.y != this.current.y || n.rotate != this.current.rotate {
-				this.moveBlock(n)
-			}
+func (this *Game) mouseEvent(mouse draw.MouseEvent){
+	if mouse.Buttons != 0 && this.Start {
+		// バックアップ
+		n := this.Current
+		if (mouse.Buttons & 0x01) == 0x01 {
+			// 左クリック検知
+			n.X--
+		} else if (mouse.Buttons & 0x02) == 0x02 {
+			// 中クリック検知
+			n.Rotate++
+		} else if (mouse.Buttons & 0x04) == 0x04 {
+			// 右クリック検知
+			n.X++
 		}
-	}
-}
-
-func (this *Game) keyboardEvent(){
-	for {
-		key := <-this.context.KeyboardChan()
-		if key > 0 && this.start {
-			n := this.current
-			n.y++
+		if n.X != this.Current.X || n.Y != this.Current.Y || n.Rotate != this.Current.Rotate {
 			this.moveBlock(n)
 		}
+	}
+}
+
+func (this *Game) keyboardEvent(key draw.KeyEvent){
+	if key.Key > 0 && this.Start {
+		n := this.Current
+		switch key.Key {
+		case 65361: // left
+			n.X--
+		case 65362: // down
+			n.Rotate++
+		case 65363: // right
+			n.X++
+		case 65364: // up
+			n.Y++
+		default:
+		}
+		this.moveBlock(n)
 	}
 }
 
@@ -141,15 +155,16 @@ func (this *Game) timerEvent(){
 	// 500ms
 	timer := time.Tick(500 * 1000 * 1000)
 	for {
-		<-timer
-		if !this.start { continue }
-		n := this.current
-		n.y++
+		data := <-timer
+		if data == 0 { return }
+		if !this.Start { continue }
+		n := this.Current
+		n.Y++
 		if !this.moveBlock(n) {
 			this.deleteLine()
 			this.createBlock()
-			if !this.putBlock(this.current, false) {
-				this.start = false
+			if !this.putBlock(this.Current, false) {
+				this.Start = false
 				go this.gameOver()
 				continue
 			}
@@ -160,12 +175,12 @@ func (this *Game) timerEvent(){
 }
 
 func (this *Game) moveBlock(n Status) (ret bool){
-	this.deleteBlock(this.current)
+	this.deleteBlock(this.Current)
 	if this.putBlock(n, false) {
-		this.current = n
+		this.Current = n
 		ret = true
 	} else {
-		this.putBlock(this.current, false)
+		this.putBlock(this.Current, false)
 		ret = false
 	}
 	this.printBoard()
@@ -173,27 +188,27 @@ func (this *Game) moveBlock(n Status) (ret bool){
 }
 
 func (this *Game) gameOver(){
-	for y := LIMIT_Y - 1; y >= 0; y-- {
-		for x := 0; x < BOARD_MAX_X; x++ {
-			if this.board[y][x] >= 0 {
-				this.board[y][x] = 0
+	for Y := LIMIT_Y - 1; Y >= 0; Y-- {
+		for X := 0; X < BOARD_MAX_X; X++ {
+			if this.Board[Y][X] >= 0 {
+				this.Board[Y][X] = 0
 			}
 		}
 		this.printBoard()
 		// 300ms止める
 		time.Sleep(100 * 1000 * 1000)
 	}
-	this.reset <- true
+	this.Reset <- true
 }
 
 func initGame(obj *Game) (*Game) {
-	obj.random = rand.New(rand.NewSource(time.Nanoseconds()))
-	for y := 0; y < BOARD_MAX_Y; y++ {
-		for x := 0; x < BOARD_MAX_X; x++ {
-			if x == 0 || x == LIMIT_X || y >= LIMIT_Y {
-				obj.board[y][x] = 0
+	obj.Random = rand.New(rand.NewSource(time.Nanoseconds()))
+	for Y := 0; Y < BOARD_MAX_Y; Y++ {
+		for X := 0; X < BOARD_MAX_X; X++ {
+			if X == 0 || X == LIMIT_X || Y >= LIMIT_Y {
+				obj.Board[Y][X] = 0
 			} else {
-				obj.board[y][x] = -1
+				obj.Board[Y][X] = -1
 			}
 		}
 	}
@@ -201,53 +216,53 @@ func initGame(obj *Game) (*Game) {
 }
 
 func (this *Game) createBlock(){
-	this.current.y = 1
-	this.current.x = 5
-	this.current.ty = this.random.Intn(7) + 1
-	this.current.rotate = 0
+	this.Current.Y = 1
+	this.Current.X = 5
+	this.Current.Ty = this.Random.Intn(7) + 1
+	this.Current.Rotate = 0
 }
 
 func (this *Game) deleteLine(){
-	for y := MARGIN_Y; y < LIMIT_Y; y++ {
+	for Y := MARGIN_Y; Y < LIMIT_Y; Y++ {
 		flag := true
-		for x := MARGIN_X; x < LIMIT_X; x++ {
-			if this.board[y][x] < 0 {
+		for X := MARGIN_X; X < LIMIT_X; X++ {
+			if this.Board[Y][X] < 0 {
 				flag = false
 			}
 		}
 		if flag {
-			for i := y; i > 1; i-- {
+			for i := Y; i > 1; i-- {
 				for j := MARGIN_X; j < LIMIT_X; j++ {
-					this.board[i][j] = this.board[i - 1][j]
+					this.Board[i][j] = this.Board[i - 1][j]
 				}
 			}
-			y--
+			Y--
 		}
 	}
 	this.printBoard()
 }
 
 func (this *Game) putBlock(s Status, action bool) (bool){
-	if this.board[s.y][s.x] >= 0 {
+	if this.Board[s.Y][s.X] >= 0 {
 		return false
 	}
 	// actionがtrueの際に実際に置く
 	if action {
-		this.board[s.y][s.x] = s.ty
+		this.Board[s.Y][s.X] = s.Ty
 	}
 	for i := 0; i < ROTATE_CHANGE; i++ {
-		dx := block[s.ty].p[i].x
-		dy := block[s.ty].p[i].y
-		r := s.rotate % block[s.ty].rotate
+		dx := block[s.Ty].P[i].X
+		dy := block[s.Ty].P[i].Y
+		r := s.Rotate % block[s.Ty].Rotate
 		for j := 0; j < r; j++ {
 			nx, ny := dx, dy
 			dx, dy = ny, -nx
 		}
-		if this.board[s.y + dy][s.x + dx] >= 0 {
+		if this.Board[s.Y + dy][s.X + dx] >= 0 {
 			return false
 		}
 		if action {
-			this.board[s.y + dy][s.x + dx] = s.ty
+			this.Board[s.Y + dy][s.X + dx] = s.Ty
 		}
 	}
 	if !action {
@@ -257,32 +272,32 @@ func (this *Game) putBlock(s Status, action bool) (bool){
 }
 
 func (this *Game) deleteBlock(s Status){
-	this.board[s.y][s.x] = -1
+	this.Board[s.Y][s.X] = -1
 	for i := 0; i < ROTATE_CHANGE; i++ {
-		dx := block[s.ty].p[i].x
-		dy := block[s.ty].p[i].y
-		r := s.rotate % block[s.ty].rotate
+		dx := block[s.Ty].P[i].X
+		dy := block[s.Ty].P[i].Y
+		r := s.Rotate % block[s.Ty].Rotate
 		for j := 0; j < r; j++ {
 			nx, ny := dx, dy
 			dx, dy = ny, -nx
 		}
-		this.board[s.y + dy][s.x + dx] = -1
+		this.Board[s.Y + dy][s.X + dx] = -1
 	}
 }
 
 func (this *Game) printBoard(){
 	white := image.RGBAColor{ 0xFF, 0xFF, 0xFF, 0xFF}
-	for y := 0; y < (MASU_Y * BLOCK_PIXEL); y++ {
-		for x := 0; x < (MASU_X * BLOCK_PIXEL); x++ {
-			dy := (y / BLOCK_PIXEL) + MARGIN_Y
-			dx := (x / BLOCK_PIXEL) + MARGIN_X
-			if this.board[dy][dx] >= 0 {
-				this.img.Set(x, y, block[this.board[dy][dx]].color)
+	for Y := 0; Y < (MASU_Y * BLOCK_PIXEL); Y++ {
+		for X := 0; X < (MASU_X * BLOCK_PIXEL); X++ {
+			dy := (Y / BLOCK_PIXEL) + MARGIN_Y
+			dx := (X / BLOCK_PIXEL) + MARGIN_X
+			if this.Board[dy][dx] >= 0 {
+				this.Img.Set(X, Y, block[this.Board[dy][dx]].Color)
 			} else {
-				this.img.Set(x, y, white)
+				this.Img.Set(X, Y, white)
 			}
 		}
 	}
-	this.context.FlushImage()
+	this.Context.FlushImage()
 }
 
